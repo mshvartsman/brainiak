@@ -26,7 +26,7 @@ package name), we use ``brainiak``.
 Quickstart
 ==========
 
-If you have `Conda <conda.io>`_::
+If you have `Conda <http://conda.io>`_::
 
     conda install -c brainiak -c defaults -c conda-forge brainiak
 

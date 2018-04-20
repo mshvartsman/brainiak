@@ -14,6 +14,8 @@ Table of contents
    release_notes
    api
    contributing
+   _test
+   test
 
 Indices and tables
 ==================
