@@ -58,3 +58,35 @@ def test_ISFC():
 
     assert np.isclose(p, ground_truth_p).all(), \
         "Calculated p values do not match ground truth"
+
+
+def test_ISFC_mlog():
+    curr_dir = os.path.dirname(__file__)
+
+    mask_fname = os.path.join(curr_dir, 'mask.nii.gz')
+    mask = io.load_boolean_mask(mask_fname)
+    fnames = [os.path.join(curr_dir, 'subj1.nii.gz'),
+              os.path.join(curr_dir, 'subj2.nii.gz')]
+    masked_images = image.mask_images(io.load_images(fnames), mask)
+
+    D = image.MaskedMultiSubjectData.from_masked_images(masked_images,
+                                                        len(fnames))
+
+    assert D.shape == (4, 5, 2), "Loaded data has incorrect shape"
+
+    (ISFC, p) = brainiak.isfc.isfc_matrixlog(D, return_p=True, num_perm=100,
+                                   two_sided=True, random_state=0)
+
+    ground_truth = \
+        [[1, 1, 0, -1],
+         [1, 1, 0, -1],
+         [0, 0, 1,  0],
+         [-1, -1, 0, 1]]
+
+    ground_truth_p = 1 - np.abs(ground_truth)
+
+    assert np.isclose(ISFC, ground_truth).all(), \
+        "Calculated ISFC does not match ground truth"
+
+    assert np.isclose(p, ground_truth_p).all(), \
+        "Calculated p values do not match ground truth"
