@@ -57,30 +57,29 @@ class FastTFA(BaseEstimator):
         return centers, widths
 
     @tf.function()
-    def marginal_tfa_loss(self, theta, X, R):
+    def marginal_tfa_loss(self, theta, X, R, s):
         """ marginal log likelihood of TFA generative model,
         omitting constant terms and priors for now
         """
         centers = tf.reshape(theta[:(3*self.k)], (self.k, 3))
         widths = tf.reshape(theta[(3*self.k):], (self.k, 1))
         F = get_factormat(R, centers, widths)
-        s = tf.math.reduce_std(X)**2
 
         cholesky_term = tf.linalg.cholesky(
             F @ tf.transpose(F) / s + tf.eye(self.k, dtype="float64"))
         logdet_term = 2 * \
             tf.reduce_sum(tf.math.log(tf.linalg.diag_part(cholesky_term))
                           ) + 2 * self.v * tf.math.log(tf.math.sqrt(s))
-        solve_term = tf.linalg.trace(tf.transpose(X) @ X / s - tf.transpose(
-            F) @ tf.linalg.cholesky_solve(cholesky_term, F) / s**2 @ tf.transpose(X) @ X)
+        solve_term = tf.linalg.trace((tf.eye(self.v, dtype="float64") / s - tf.transpose(
+            F) @ tf.linalg.cholesky_solve(cholesky_term, F) / s**2) @ tf.transpose(X) @ X)
 
         return logdet_term + solve_term
 
     @tf.function()
-    def _val_and_grad(self, theta, X, R):
+    def _val_and_grad(self, theta, X, R, s):
         with tf.GradientTape() as tape:
             tape.watch(theta)
-            loss = self.marginal_tfa_loss(theta, X, R)
+            loss = self.marginal_tfa_loss(theta, X, R, s)
 
         grad = tape.gradient(loss, theta)
         return loss, grad
@@ -108,9 +107,13 @@ class FastTFA(BaseEstimator):
         ub = [np.max(R)] * 3 * self.k + [np.std(R)**2] * self.k
         bounds = list(zip(lb, ub))
 
+        xconst = tf.constant(X)
+        rconst = tf.constant(R)
+        s = tf.math.reduce_std(X)**2
+        
         def val_and_grad(theta):
             theta_ = tf.constant(theta)
-            loss, grad = self._val_and_grad(theta_, X, R)
+            loss, grad = self._val_and_grad(theta_, xconst, rconst, s)
             return loss.numpy(), grad.numpy()
 
         result = minimize(fun=val_and_grad, x0=theta0,
