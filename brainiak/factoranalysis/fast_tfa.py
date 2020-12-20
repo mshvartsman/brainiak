@@ -13,6 +13,17 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+@tf.function()
+def get_factormat(R, centers, widths):
+    rdists = tf.reduce_sum(tf.square(R), axis=-1)
+    cdists = tf.reduce_sum(tf.square(centers), axis=-1)
+
+    distmat = cdists[:, None] - 2.0 * \
+        (centers @ tf.transpose(R)) + rdists[None, :]
+
+    return tf.math.exp(-distmat / widths)
+
+
 class FastTFA(BaseEstimator):
 
     def __init__(
@@ -37,12 +48,12 @@ class FastTFA(BaseEstimator):
         max_sigma = 2.0 * math.pow(np.nanmax(np.std(R, axis=0)), 2)
         kmeans = KMeans(
             init='k-means++',
-            n_clusters=k,
+            n_clusters=self.k,
             n_init=10,
             random_state=100)
         kmeans.fit(R)
         centers = kmeans.cluster_centers_
-        widths = max_sigma * np.ones((k, 1)) + np.random.normal(k)
+        widths = max_sigma * np.ones((self.k, 1)) + np.random.normal(self.k)
         return centers, widths
 
     @tf.function()
@@ -52,7 +63,7 @@ class FastTFA(BaseEstimator):
         """
         centers = tf.reshape(theta[:(3*self.k)], (self.k, 3))
         widths = tf.reshape(theta[(3*self.k):], (self.k, 1))
-        F = self.get_factormat(R, centers, widths)
+        F = get_factormat(R, centers, widths)
         s = tf.math.reduce_std(X)**2
 
         cholesky_term = tf.linalg.cholesky(
@@ -64,16 +75,6 @@ class FastTFA(BaseEstimator):
             F) @ tf.linalg.cholesky_solve(cholesky_term, F) / s**2 @ tf.transpose(X) @ X)
 
         return logdet_term + solve_term
-
-    @tf.function()
-    def get_factormat(self, R, centers, widths):
-        rdists = tf.reduce_sum(tf.square(R), axis=-1)
-        cdists = tf.reduce_sum(tf.square(centers), axis=-1)
-
-        distmat = cdists[:, None] - 2.0 * \
-            (centers @ tf.transpose(R)) + rdists[None, :]
-
-        return tf.math.exp(-distmat / widths)
 
     @tf.function()
     def _val_and_grad(self, theta, X, R):
@@ -117,6 +118,6 @@ class FastTFA(BaseEstimator):
 
         self.centers_ = result.x[:(3*self.k)].reshape(self.k, 3)
         self.widths_ = result.x[(3*self.k):].reshape(self.k, 1)
-        self.F_ = self.get_factormat(R, self.centers_, self.widths_).numpy()
+        self.F_ = get_factormat(R, self.centers_, self.widths_).numpy()
         self.W_ = np.linalg.solve(self.F_ @ self.F_.T, self.F_ @ X.T).T
         return self
