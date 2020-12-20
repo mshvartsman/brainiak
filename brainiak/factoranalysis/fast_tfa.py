@@ -1,9 +1,7 @@
 from sklearn.base import BaseEstimator
-from sklearn.cluster import KMeans
 from scipy.optimize import minimize
 import numpy as np
 import tensorflow as tf
-import math
 import logging
 
 __all__ = [
@@ -31,31 +29,6 @@ class FastTFA(BaseEstimator):
             k=5):
         self.k = k
 
-    def init_centers_widths(self, R):
-        """Initialize prior of centers and widths
-
-        Returns
-        -------
-
-        centers : 2D array, with shape [K, n_dim]
-            Prior of factors' centers.
-
-        widths : 1D array, with shape [K, 1]
-            Prior of factors' widths.
-
-        """
-
-        max_sigma = 2.0 * math.pow(np.nanmax(np.std(R, axis=0)), 2)
-        kmeans = KMeans(
-            init='k-means++',
-            n_clusters=self.k,
-            n_init=10,
-            random_state=100)
-        kmeans.fit(R)
-        centers = kmeans.cluster_centers_
-        widths = max_sigma * np.ones((self.k, 1)) + np.random.normal(self.k)
-        return centers, widths
-
     @tf.function()
     def marginal_tfa_loss(self, theta, X, R, s):
         """ marginal log likelihood of TFA generative model,
@@ -69,9 +42,9 @@ class FastTFA(BaseEstimator):
             F @ tf.transpose(F) / s + tf.eye(self.k, dtype="float64"))
         logdet_term = 2 * \
             tf.reduce_sum(tf.math.log(tf.linalg.diag_part(cholesky_term))
-                          ) + 2 * self.v * tf.math.log(tf.math.sqrt(s))
-        solve_term = tf.linalg.trace((tf.eye(self.v, dtype="float64") / s - tf.transpose(
-            F) @ tf.linalg.cholesky_solve(cholesky_term, F) / s**2) @ tf.transpose(X) @ X)
+                          ) + 2 * self.sz * tf.math.log(tf.math.sqrt(s))
+        solve_term = tf.linalg.trace(X @ (tf.eye(self.sz, dtype="float64") / s - tf.transpose(
+            F) @ tf.linalg.cholesky_solve(cholesky_term, F) / s**2) @ tf.transpose(X))
 
         return logdet_term + solve_term
 
@@ -84,7 +57,7 @@ class FastTFA(BaseEstimator):
         grad = tape.gradient(loss, theta)
         return loss, grad
 
-    def fit(self, X, R):
+    def fit(self, X, R, n_iter=1, subsamp_size_v=None, subsamp_size_t=None):
         """ Topographical Factor Analysis (TFA)[Manning2014]
 
         Parameters
@@ -98,7 +71,10 @@ class FastTFA(BaseEstimator):
         """
         self.t, self.v = X.shape
 
-        init_centers, init_widths = self.init_centers_widths(R)
+        init_centers = np.random.randint(
+            np.min(R), high=np.max(R), size=(self.k, 3)).astype("float64")
+        init_widths = np.abs(np.random.normal(
+            loc=0, scale=np.std(R)**2, size=(self.k, 1)))
 
         theta0 = np.concatenate(
             [init_centers.flatten(), init_widths.flatten()])
@@ -107,17 +83,31 @@ class FastTFA(BaseEstimator):
         ub = [np.max(R)] * 3 * self.k + [np.std(R)**2] * self.k
         bounds = list(zip(lb, ub))
 
+        s = tf.math.reduce_std(X)**2
+        subsamp_size_v = subsamp_size_v or self.v
+        subsamp_size_t = subsamp_size_t or self.t
+        self.sz = subsamp_size_v
+        n_iter = n_iter if subsamp_size_v else 1
         xconst = tf.constant(X)
         rconst = tf.constant(R)
-        s = tf.math.reduce_std(X)**2
-        
-        def val_and_grad(theta):
-            theta_ = tf.constant(theta)
-            loss, grad = self._val_and_grad(theta_, xconst, rconst, s)
-            return loss.numpy(), grad.numpy()
 
-        result = minimize(fun=val_and_grad, x0=theta0,
-                          method="L-BFGS-B", jac=True, bounds=bounds)
+        for i in range(n_iter):
+            if subsamp_size_v < self.v:
+                subsamp_v = np.random.choice(
+                    self.v, subsamp_size_v, replace=False)
+                subsamp_t = np.random.choice(
+                    self.t, subsamp_size_t, replace=False)
+                xconst = tf.constant(X[subsamp_t, :][:, subsamp_v])
+                rconst = tf.constant(R[subsamp_v, :])
+                self.sz = subsamp_size_v
+
+            def val_and_grad(theta):
+                theta_ = tf.constant(theta)
+                loss, grad = self._val_and_grad(theta_, xconst, rconst, s)
+                return loss.numpy(), grad.numpy()
+            result = minimize(fun=val_and_grad, x0=theta0,
+                              method="L-BFGS-B", jac=True, bounds=bounds)
+            theta0 = result.x
 
         self.centers_ = result.x[:(3*self.k)].reshape(self.k, 3)
         self.widths_ = result.x[(3*self.k):].reshape(self.k, 1)
